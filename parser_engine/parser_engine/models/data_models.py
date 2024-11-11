@@ -86,7 +86,7 @@ class FunctionElement:
     """Represents a function or method."""
     name: str
     path: Path  # Change to Path
-    line_number: int
+    start_line: int
     end_line: int  # Add end line tracking
     documentation: Optional[DocumentationElement] = None
     parameters: List[str] = field(default_factory=list)
@@ -105,7 +105,7 @@ class ClassElement:
     """Represents a class definition."""
     name: str
     path: Path  # Change to Path
-    line_number: int
+    start_line: int
     end_line: int  # Add end line tracking
     documentation: Optional[DocumentationElement] = None
     methods: List[FunctionElement] = field(default_factory=list)
