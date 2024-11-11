@@ -1,5 +1,4 @@
 from datetime import datetime
-import pytest
 from parser_engine.models.data_models import *
 
 def test_contributor_data():
