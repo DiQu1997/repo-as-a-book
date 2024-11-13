@@ -126,6 +126,7 @@ class ModuleElement:
     documentation: Optional[DocumentationElement] = None
     size_bytes: int = 0
     lines_of_code: int = 0
+    error: Optional[str] = None
     
     @property
     def is_package(self) -> bool:
