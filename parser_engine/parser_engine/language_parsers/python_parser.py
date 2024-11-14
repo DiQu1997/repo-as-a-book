@@ -63,15 +63,15 @@ class PythonParser(BaseParser):
             
             for node in ast.iter_child_nodes(tree):
                 if isinstance(node, ast.ClassDef):
-                    classes.append(self._parse_class(node))
+                    classes.append(self._parse_class(path, node))
                 elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    functions.append(self._parse_function(node))
+                    functions.append(self._parse_function(path, node))
                 elif isinstance(node, (ast.Import, ast.ImportFrom)):
                     imports.extend(self._parse_imports(node))
                     
             return ModuleElement(
-                name=path.stem,
-                path=path,
+                name=str(path),
+                path=str(path),
                 language=self.language,
                 classes=classes,
                 functions=functions,
@@ -83,7 +83,7 @@ class PythonParser(BaseParser):
             self.logger.error(f"Error parsing {path}: {e}")
             return self._create_error_module(path, e)
 
-    def _parse_class(self, node: ast.ClassDef) -> ClassElement:
+    def _parse_class(self, path: Path, node: ast.ClassDef) -> ClassElement:
         """Parse a class definition."""
         self.context.current_class = node.name
         
@@ -99,9 +99,9 @@ class PythonParser(BaseParser):
             
             for body_node in node.body:
                 if isinstance(body_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    methods.append(self._parse_function(body_node))
+                    methods.append(self._parse_function(path, body_node))
                 elif isinstance(body_node, ast.ClassDef):
-                    nested_classes.append(self._parse_class(body_node))
+                    nested_classes.append(self._parse_class(path, body_node))
                 elif isinstance(body_node, ast.Assign):
                     # Class attributes
                     for target in body_node.targets:
@@ -109,8 +109,8 @@ class PythonParser(BaseParser):
                             attributes[target.id] = self._get_attribute_type(body_node.value)
                             
             return ClassElement(
-                name=node.name,
-                path=str(node.lineno),
+                name=f"{path}:{node.name}",
+                path=str(path),
                 documentation=docstring,
                 methods=methods,
                 base_classes=[self._get_name(base) for base in node.bases],
@@ -193,7 +193,7 @@ class PythonParser(BaseParser):
             return f"{self._get_decorator_name(node.value)}.{node.attr}"
         return ast.unparse(node)
 
-    def _parse_function(self, node: Union[ast.FunctionDef, ast.AsyncFunctionDef]) -> FunctionElement:
+    def _parse_function(self, path: Path, node: Union[ast.FunctionDef, ast.AsyncFunctionDef]) -> FunctionElement:
         """Parse a function or method definition."""
         self.context.current_function = node.name
         self.context.in_async_def = isinstance(node, ast.AsyncFunctionDef)
@@ -216,8 +216,8 @@ class PythonParser(BaseParser):
             complexity = self._calculate_complexity(node)
             
             return FunctionElement(
-                name=node.name,
-                path=str(node.lineno),
+                name=f"{path}:{node.name}({', '.join(parameters)}) -> {return_type} : {node.lineno}",
+                path=str(path),
                 documentation=docstring,
                 parameters=parameters,
                 return_type=return_type,

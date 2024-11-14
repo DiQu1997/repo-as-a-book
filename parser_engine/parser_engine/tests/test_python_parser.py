@@ -60,10 +60,10 @@ class TestPythonParser:
         '''
         tree = ast.parse(dedent(code))
         func_node = tree.body[0]
-        func = parser._parse_function(func_node)
+        func = parser._parse_function(Path('test.py'), func_node)
         
         assert isinstance(func, FunctionElement)
-        assert func.name == 'test_func'
+        assert func.name == 'test.py:test_func(param1: str, param2: int) -> bool : 3'
         assert func.is_async
         assert func.parameters == ['param1: str', 'param2: int']
         assert func.return_type == 'bool'
@@ -88,14 +88,14 @@ class TestPythonParser:
         '''
         tree = ast.parse(dedent(code))
         class_node = tree.body[0]
-        cls = parser._parse_class(class_node)
+        cls = parser._parse_class(Path('test.py'), class_node)
         
         assert isinstance(cls, ClassElement)
-        assert cls.name == 'TestClass'
+        assert cls.name == 'test.py:TestClass'
         assert cls.base_classes == ['BaseClass']
         assert cls.decorators == ['@decorator']
         assert len(cls.methods) == 1
-        assert cls.methods[0].name == 'method'
+        assert cls.methods[0].name == 'test.py:method(self: Any) -> Any : 7'
         assert 'class_attr' in cls.attributes
         assert isinstance(cls.documentation, DocumentationElement)
         assert cls.documentation.content == "Test class"
@@ -138,7 +138,7 @@ class TestPythonParser:
         module = parser.parse_file(test_file)
         
         assert isinstance(module, ModuleElement)
-        assert module.name == 'test'
+        assert module.name.endswith('test.py')
         assert module.language == 'Python'
         assert len(module.classes) == 1
         assert len(module.functions) == 1
