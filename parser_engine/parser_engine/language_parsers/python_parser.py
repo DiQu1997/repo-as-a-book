@@ -15,8 +15,9 @@ from ..models.data_models import (
 @dataclass
 class ContextInfo:
     """Helper class to track parsing context."""
-    current_class: Optional[str] = None
-    current_function: Optional[str] = None
+    module: Optional[ModuleElement] = None
+    parent_class: Optional[ClassElement] = None
+    parent_function: Optional[FunctionElement] = None
     in_async_def: bool = False
 
 class PythonParser(BaseParser):
@@ -26,7 +27,6 @@ class PythonParser(BaseParser):
 
     def __init__(self):
         super().__init__()
-        self.context = ContextInfo()
 
     def can_parse(self, path: Path) -> bool:
         """Check if file is a Python file."""
@@ -53,75 +53,84 @@ class PythonParser(BaseParser):
             # Parse the AST
             tree = ast.parse(content)
             
+            # Create module element first
+            module = ModuleElement(
+                name=str(path),  # Full path as module name
+                path=path,
+                language=self.language,
+                classes=[],
+                functions=[],
+                imports=[],
+                documentation=None,
+                body=content
+            )
+            
+            # Create initial context
+            context = ContextInfo(module=module)
+            
             # Extract module docstring
-            module_doc = self._parse_docstring(tree)
+            module.documentation = self._parse_docstring(tree)
             
             # Parse all module elements
-            classes = []
-            functions = []
-            imports = []
-            
             for node in ast.iter_child_nodes(tree):
                 if isinstance(node, ast.ClassDef):
-                    classes.append(self._parse_class(path, node))
+                    module.classes.append(self._parse_class(path, node, context, str(context.module.name)))
                 elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    functions.append(self._parse_function(path, node))
+                    module.functions.append(self._parse_function(path, node, context, str(context.module.name)))
                 elif isinstance(node, (ast.Import, ast.ImportFrom)):
-                    imports.extend(self._parse_imports(node))
-                    
-            return ModuleElement(
-                name=str(path),
-                path=str(path),
-                language=self.language,
-                classes=classes,
-                functions=functions,
-                imports=imports,
-                documentation=module_doc
-            )
+                    module.imports.extend(self._parse_imports(node))
+            return module
             
         except Exception as e:
             self.logger.error(f"Error parsing {path}: {e}")
             return self._create_error_module(path, e)
 
-    def _parse_class(self, path: Path, node: ast.ClassDef) -> ClassElement:
+    def _parse_class(self, path: Path, node: ast.ClassDef, context: ContextInfo, parent_name: str) -> ClassElement:
         """Parse a class definition."""
-        self.context.current_class = node.name
+        # Build qualified name based on context
+        qualified_name = [parent_name, f"{node.name}({', '.join(self._get_name(base) for base in node.bases)})"]
         
-        try:
-            # Get docstring and decorators
-            docstring = self._parse_docstring(node)
-            decorators = self._parse_decorators(node)
-            
-            # Parse methods and nested classes
-            methods = []
-            nested_classes = []
-            attributes = {}
-            
-            for body_node in node.body:
-                if isinstance(body_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    methods.append(self._parse_function(path, body_node))
-                elif isinstance(body_node, ast.ClassDef):
-                    nested_classes.append(self._parse_class(path, body_node))
-                elif isinstance(body_node, ast.Assign):
-                    # Class attributes
-                    for target in body_node.targets:
-                        if isinstance(target, ast.Name):
-                            attributes[target.id] = self._get_attribute_type(body_node.value)
-                            
-            return ClassElement(
-                name=f"{path}:{node.name}",
-                path=str(path),
-                documentation=docstring,
-                methods=methods,
-                base_classes=[self._get_name(base) for base in node.bases],
-                attributes=attributes,
-                decorators=decorators,
-                start_line=node.lineno,
-                end_line=node.end_lineno
-            )
-            
-        finally:
-            self.context.current_class = None
+        # Create class element first
+        class_element = ClassElement(
+            name=":".join(qualified_name),  # <parent_name>:<parent_name>....<class_name>
+            path=path,
+            documentation=None,
+            methods=[],
+            base_classes=[],
+            attributes={},
+            decorators=[],
+            start_line=node.lineno,
+            end_line=node.end_lineno,
+            module=context.module
+        )
+        
+        # Create new context for class contents
+        class_context = ContextInfo(
+            module=context.module,
+            parent_class=class_element,
+            parent_function=context.parent_function,
+            in_async_def=context.in_async_def
+        )
+        
+        # Get docstring and decorators
+        class_element.documentation = self._parse_docstring(node)
+        class_element.decorators = self._parse_decorators(node)
+        
+        # Parse methods and nested classes
+        for body_node in node.body:
+            if isinstance(body_node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                class_element.methods.append(self._parse_function(path, body_node, class_context, class_element.name))
+            elif isinstance(body_node, ast.ClassDef):
+                class_element.inner_classes.append(self._parse_class(path, body_node, class_context, class_element.name))
+            elif isinstance(body_node, ast.Assign):
+                # Class attributes
+                for target in body_node.targets:
+                    if isinstance(target, ast.Name):
+                        class_element.attributes[target.id] = self._get_attribute_type(body_node.value)
+                        
+        class_element.base_classes = [self._get_name(base) for base in node.bases]
+        
+        return class_element
 
     def _parse_decorators(self, node: Union[ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef]) -> List[str]:
         """
@@ -193,44 +202,49 @@ class PythonParser(BaseParser):
             return f"{self._get_decorator_name(node.value)}.{node.attr}"
         return ast.unparse(node)
 
-    def _parse_function(self, path: Path, node: Union[ast.FunctionDef, ast.AsyncFunctionDef]) -> FunctionElement:
+    def _parse_function(self, path: Path, node: Union[ast.FunctionDef, ast.AsyncFunctionDef], context: ContextInfo, parent_name: str) -> FunctionElement:
         """Parse a function or method definition."""
-        self.context.current_function = node.name
-        self.context.in_async_def = isinstance(node, ast.AsyncFunctionDef)
+        # Get parameters and return type
+        params = []
+        for arg in node.args.args:
+            param_type = self._get_annotation_type(arg.annotation)
+            params.append(f"{arg.arg}: {param_type}")
+        return_type = self._get_annotation_type(node.returns)
         
-        try:
-            # Get docstring and decorators
-            docstring = self._parse_docstring(node)
-            decorators = self._parse_decorators(node)
-            
-            # Get parameters
-            parameters = []
-            for arg in node.args.args:
-                param_type = self._get_annotation_type(arg.annotation)
-                parameters.append(f"{arg.arg}: {param_type}")
-                
-            # Get return type
-            return_type = self._get_annotation_type(node.returns)
-            
-            # Calculate complexity (simple version)
-            complexity = self._calculate_complexity(node)
-            
-            return FunctionElement(
-                name=f"{path}:{node.name}({', '.join(parameters)}) -> {return_type} : {node.lineno}",
-                path=str(path),
-                documentation=docstring,
-                parameters=parameters,
-                return_type=return_type,
-                decorators=decorators,
-                complexity=complexity,
-                start_line=node.lineno,
-                end_line=node.end_lineno,
-                is_async=self.context.in_async_def
-            )
-            
-        finally:
-            self.context.current_function = None
-            self.context.in_async_def = False
+        # Build qualified name based on context
+        qualified_name = [parent_name, f"{node.name}({', '.join(params)}) -> {return_type}"]
+        
+        # Create function element
+        function_element = FunctionElement(
+            name=":".join(qualified_name),  # <parent_name>:<parent_name>....<function_name>
+            path=path,
+            module=context.module,
+            documentation=None,
+            parameters=params,
+            return_type=return_type,
+            decorators=[],
+            complexity=None,
+            start_line=node.lineno,
+            end_line=node.end_lineno,
+            is_async=isinstance(node, ast.AsyncFunctionDef)
+        )
+        
+        # Create new context for function contents
+        function_context = ContextInfo(
+            module=context.module,
+            parent_class=context.parent_class,
+            parent_function=function_element,
+            in_async_def=isinstance(node, ast.AsyncFunctionDef)
+        )
+        
+        # Get docstring and decorators
+        function_element.documentation = self._parse_docstring(node)
+        function_element.decorators = self._parse_decorators(node)
+        
+        # Calculate complexity
+        function_element.complexity = self._calculate_complexity(node)
+        
+        return function_element
 
     def _parse_imports(self, node: Union[ast.Import, ast.ImportFrom]) -> List[str]:
         """Parse import statements."""

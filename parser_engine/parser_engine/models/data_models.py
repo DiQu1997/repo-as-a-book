@@ -84,10 +84,15 @@ class DocumentationElement:
 @dataclass
 class FunctionElement:
     """Represents a function or method."""
+    # The function's own name should be in format of 
+    # "function_name(Parameter1: Type, Parameter2: Type, ...) -> ReturnType"
+    # The full qualified name should be in format of
+    # <parent_name>:<parent_name>....<function_name>.lineno
     name: str
     path: Path  # Change to Path
     start_line: int
     end_line: int  # Add end line tracking
+    module: Optional['ModuleElement'] = None
     documentation: Optional[DocumentationElement] = None
     parameters: List[str] = field(default_factory=list)
     return_type: Optional[str] = None
@@ -103,10 +108,15 @@ class FunctionElement:
 @dataclass
 class ClassElement:
     """Represents a class definition."""
+    # The class's own name should be in format of 
+    # "class_name(BaseClass1, BaseClass2, ...)"
+    # The full qualified name should be in format of
+    # <parent_name>:<parent_name>....<class_name>.lineno
     name: str
     path: Path  # Change to Path
     start_line: int
     end_line: int  # Add end line tracking
+    module: Optional['ModuleElement'] = None
     documentation: Optional[DocumentationElement] = None
     methods: List[FunctionElement] = field(default_factory=list)
     base_classes: List[str] = field(default_factory=list)
@@ -117,6 +127,10 @@ class ClassElement:
 @dataclass
 class ModuleElement:
     """Represents a code module (file)."""
+    # The module's own name should be in format of
+    # "/path/to/module_name.py"
+    # The full qualified name should be in format of
+    # <parent_name>:<parent_name>....<module_name>.lineno
     name: str
     path: Path  # Change to Path
     language: str
@@ -127,6 +141,7 @@ class ModuleElement:
     size_bytes: int = 0
     lines_of_code: int = 0
     error: Optional[str] = None
+    body: Optional[str] = None
     
     @property
     def is_package(self) -> bool:
@@ -137,7 +152,7 @@ class ModuleElement:
 class FileNode:
     """Represents a file in the repository."""
     name: str
-    path: Path  # Change to Path
+    path: Path 
     size_bytes: int
     last_modified: datetime
     extension: str
