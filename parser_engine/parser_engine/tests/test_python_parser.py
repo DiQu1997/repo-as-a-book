@@ -56,11 +56,11 @@ class TestPythonParser:
         '''
         tree = ast.parse(dedent(code))
         func_node = tree.body[0]
-        module = ModuleElement(name='test.py', path=Path('test.py'), language = 'Python')
+        module = ModuleElement(name='test', path=Path('test.py'), language = 'Python')
         func = parser._parse_function(Path('test.py'), func_node, ContextInfo(module=module), str(module.name))
         
         assert isinstance(func, FunctionElement)
-        assert func.name == 'test.py:test_func(param1: str, param2: int) -> bool'
+        assert func.name == 'test.test_func(param1: str, param2: int) -> bool'
         assert func.is_async
         assert func.parameters == ['param1: str', 'param2: int']
         assert func.return_type == 'bool'
@@ -85,15 +85,15 @@ class TestPythonParser:
         '''
         tree = ast.parse(dedent(code))
         class_node = tree.body[0]
-        module = ModuleElement(name='test.py', path=Path('test.py'), language = 'Python')
+        module = ModuleElement(name='test', path=Path('test.py'), language = 'Python')
         cls = parser._parse_class(Path('test.py'), class_node, ContextInfo(module=module), str(module.name))
         
         assert isinstance(cls, ClassElement)
-        assert cls.name == 'test.py:TestClass(BaseClass)'
+        assert cls.name == 'test.TestClass'
         assert cls.base_classes == ['BaseClass']
         assert cls.decorators == ['@decorator']
         assert len(cls.methods) == 1
-        assert cls.methods[0].name == 'test.py:TestClass(BaseClass):method(self: Any) -> Any'
+        assert cls.methods[0].name == 'test.TestClass.method(self: Any) -> Any'
         assert 'class_attr' in cls.attributes
         assert isinstance(cls.documentation, DocumentationElement)
         assert cls.documentation.content == "Test class"
@@ -136,13 +136,16 @@ class TestPythonParser:
         module = parser.parse_file(test_file)
         
         assert isinstance(module, ModuleElement)
-        assert module.name.endswith('test.py')
+        assert module.name.endswith('test')
         assert module.language == 'Python'
         assert len(module.classes) == 1
         assert len(module.functions) == 1
         assert len(module.imports) == 1
         assert isinstance(module.documentation, DocumentationElement)
         assert module.documentation.content == "Module docstring"
+        assert module.classes[0].name == f'{module.name}.TestClass'
+        assert module.functions[0].name == f'{module.name}.test_func() -> Any'
+        assert module.classes[0].methods[0].name == f'{module.name}.TestClass.method(self: Any) -> Any'
 
     def test_error_handling(self, parser, tmp_path):
         """Test error handling for invalid Python code"""

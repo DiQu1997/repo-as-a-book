@@ -53,9 +53,21 @@ class PythonParser(BaseParser):
             # Parse the AST
             tree = ast.parse(content)
             
-            # Create module element first
+            # Convert path to module name
+            # Assuming path is absolute, find common project root
+            # You might want to pass this as a parameter or detect it
+            project_root = path.parent.parent  # Example: adjust based on your needs
+            
+            try:
+                relative_path = path.relative_to(project_root)
+                module_name = str(relative_path.parent / relative_path.stem)  # Include parent dirs
+                module_name = module_name.replace('/', '.').replace('\\', '.')
+            except ValueError:
+                # Fallback if path is not relative to project_root
+                module_name = path.stem
+            
             module = ModuleElement(
-                name=str(path),  # Full path as module name
+                name=module_name,  # Will look like 'package.subpackage.module'
                 path=path,
                 language=self.language,
                 classes=[],
@@ -70,13 +82,12 @@ class PythonParser(BaseParser):
             
             # Extract module docstring
             module.documentation = self._parse_docstring(tree)
-            
             # Parse all module elements
             for node in ast.iter_child_nodes(tree):
                 if isinstance(node, ast.ClassDef):
-                    module.classes.append(self._parse_class(path, node, context, str(context.module.name)))
+                    module.classes.append(self._parse_class(path, node, context, module_name))
                 elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    module.functions.append(self._parse_function(path, node, context, str(context.module.name)))
+                    module.functions.append(self._parse_function(path, node, context, module_name))
                 elif isinstance(node, (ast.Import, ast.ImportFrom)):
                     module.imports.extend(self._parse_imports(node))
             return module
@@ -88,11 +99,11 @@ class PythonParser(BaseParser):
     def _parse_class(self, path: Path, node: ast.ClassDef, context: ContextInfo, parent_name: str) -> ClassElement:
         """Parse a class definition."""
         # Build qualified name based on context
-        qualified_name = [parent_name, f"{node.name}({', '.join(self._get_name(base) for base in node.bases)})"]
+        qualified_name = [parent_name, f"{node.name}"]
         
         # Create class element first
         class_element = ClassElement(
-            name=":".join(qualified_name),  # <parent_name>:<parent_name>....<class_name>
+            name=".".join(qualified_name),  # <parent_name>.<parent_name>....<class_name>
             path=path,
             documentation=None,
             methods=[],
@@ -216,7 +227,7 @@ class PythonParser(BaseParser):
         
         # Create function element
         function_element = FunctionElement(
-            name=":".join(qualified_name),  # <parent_name>:<parent_name>....<function_name>
+            name=".".join(qualified_name),  # <parent_name>.<parent_name>....<function_name>
             path=path,
             module=context.module,
             documentation=None,
