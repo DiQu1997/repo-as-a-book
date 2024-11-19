@@ -36,7 +36,7 @@ class PythonParser(BaseParser):
         """Get supported Python file extensions."""
         return ['.py', '.pyw']
 
-    def parse_file(self, path: Path) -> ModuleElement:
+    def parse_file(self, path: Path, package_name = "") -> ModuleElement:
         """
         Parse a Python source file.
         
@@ -65,6 +65,8 @@ class PythonParser(BaseParser):
             except ValueError:
                 # Fallback if path is not relative to project_root
                 module_name = path.stem
+            if package_name:
+                module_name = f"{package_name}.{module_name}"
             
             module = ModuleElement(
                 name=module_name,  # Will look like 'package.subpackage.module'
@@ -73,6 +75,7 @@ class PythonParser(BaseParser):
                 classes=[],
                 functions=[],
                 imports=[],
+                imports_mapping={},
                 documentation=None,
                 body=content
             )
@@ -89,7 +92,9 @@ class PythonParser(BaseParser):
                 elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     module.functions.append(self._parse_function(path, node, context, module_name))
                 elif isinstance(node, (ast.Import, ast.ImportFrom)):
-                    module.imports.extend(self._parse_imports(node))
+                    imports = self._parse_imports(node)
+                    module.imports.extend(imports.keys())
+                    module.imports_mapping.update(imports)
             return module
             
         except Exception as e:
@@ -257,17 +262,22 @@ class PythonParser(BaseParser):
         
         return function_element
 
-    def _parse_imports(self, node: Union[ast.Import, ast.ImportFrom]) -> List[str]:
-        """Parse import statements."""
-        imports = []
+    def _parse_imports(self, node: Union[ast.Import, ast.ImportFrom]) -> Dict[str, str]:
+        """Parse import statements and build a mapping."""
+        imports_mapping = {}
         if isinstance(node, ast.Import):
-            for name in node.names:
-                imports.append(name.name)
-        else:  # ImportFrom
+            for alias in node.names:
+                name = alias.name  # actual module name
+                asname = alias.asname if alias.asname else alias.name.split('.')[0]
+                imports_mapping[asname] = name
+        elif isinstance(node, ast.ImportFrom):
             module = node.module or ''
-            for name in node.names:
-                imports.append(f"from {module} import {name.name}")
-        return imports
+            for alias in node.names:
+                name = alias.name
+                asname = alias.asname if alias.asname else name
+                full_name = f"{module}.{name}" if module else name
+                imports_mapping[asname] = full_name
+        return imports_mapping
 
     def _parse_docstring(self, node: ast.AST) -> Optional[DocumentationElement]:
         """Extract docstring from an AST node."""

@@ -82,6 +82,14 @@ class DocumentationElement:
         return self.type == 'docstring'
 
 @dataclass
+class FunctionCallElement:
+    """Represents a function call."""
+    name: str
+    module_name: Optional[str]
+    line_number: int
+    resolved_name: Optional[str] = None
+
+@dataclass
 class FunctionElement:
     """Represents a function or method."""
     # The function's own name should be in format of 
@@ -99,6 +107,8 @@ class FunctionElement:
     decorators: List[str] = field(default_factory=list)
     complexity: Optional[int] = None
     is_async: bool = False
+    function_calls: List['FunctionCallElement'] = field(default_factory=list)
+    qualified_name: Optional[str] = None
     
     @property
     def length(self) -> int:
@@ -123,7 +133,7 @@ class ClassElement:
     attributes: Dict[str, str] = field(default_factory=dict)
     decorators: List[str] = field(default_factory=list)
     inner_classes: List['ClassElement'] = field(default_factory=list)  # Add inner classes support
-
+    qualified_name: Optional[str] = None
 @dataclass
 class ModuleElement:
     """Represents a code module (file)."""
@@ -142,6 +152,7 @@ class ModuleElement:
     lines_of_code: int = 0
     error: Optional[str] = None
     body: Optional[str] = None
+    imports_mapping: Dict[str, str] = field(default_factory=dict)
     
     @property
     def is_package(self) -> bool:
