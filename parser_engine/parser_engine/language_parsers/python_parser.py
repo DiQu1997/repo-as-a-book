@@ -9,7 +9,7 @@ from dataclasses import dataclass
 
 from .base_parser import BaseParser
 from ..models.data_models import (
-    ModuleElement, ClassElement, FunctionElement, DocumentationElement
+    ModuleElement, ClassElement, FunctionElement, DocumentationElement, FunctionCallElement
 )
 
 @dataclass
@@ -62,9 +62,14 @@ class PythonParser(BaseParser):
                 relative_path = path.relative_to(project_root)
                 module_name = str(relative_path.parent / relative_path.stem)  # Include parent dirs
                 module_name = module_name.replace('/', '.').replace('\\', '.')
+                parent_module = str(relative_path.parent).replace('/', '.').replace('\\', '.')
+                if parent_module == '.':
+                    parent_module = ''
             except ValueError:
                 # Fallback if path is not relative to project_root
                 module_name = path.stem
+                parent_module = ''
+            
             if package_name:
                 module_name = f"{package_name}.{module_name}"
             
@@ -75,7 +80,7 @@ class PythonParser(BaseParser):
                 classes=[],
                 functions=[],
                 imports=[],
-                imports_mapping={},
+                imports_mapping=dict(),
                 documentation=None,
                 body=content
             )
@@ -92,7 +97,7 @@ class PythonParser(BaseParser):
                 elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                     module.functions.append(self._parse_function(path, node, context, module_name))
                 elif isinstance(node, (ast.Import, ast.ImportFrom)):
-                    imports = self._parse_imports(node)
+                    imports = self._parse_imports(node, parent_module)
                     module.imports.extend(imports.keys())
                     module.imports_mapping.update(imports)
             return module
@@ -113,7 +118,7 @@ class PythonParser(BaseParser):
             documentation=None,
             methods=[],
             base_classes=[],
-            attributes={},
+            attributes=dict(),
             decorators=[],
             start_line=node.lineno,
             end_line=node.end_lineno,
@@ -262,21 +267,53 @@ class PythonParser(BaseParser):
         
         return function_element
 
-    def _parse_imports(self, node: Union[ast.Import, ast.ImportFrom]) -> Dict[str, str]:
+    def _parse_imports(self, node: Union[ast.Import, ast.ImportFrom], parent_module: str = '') -> Dict[str, str]:
         """Parse import statements and build a mapping."""
-        imports_mapping = {}
+        imports_mapping = dict()
+        top_level = parent_module.split('.')[0] if parent_module else ''
+
         if isinstance(node, ast.Import):
             for alias in node.names:
-                name = alias.name  # actual module name
+                name = alias.name
                 asname = alias.asname if alias.asname else alias.name.split('.')[0]
+                if parent_module and not name.startswith('.'):
+                    if not name.startswith(top_level):
+                        name = f"{top_level}.{name}"
                 imports_mapping[asname] = name
         elif isinstance(node, ast.ImportFrom):
             module = node.module or ''
+            
+            # Handle relative imports
+            if node.level > 0:  # This is a relative import
+                if parent_module:
+                    parts = parent_module.split('.')
+                    # For level=1 (current directory), we want all parts
+                    # For level=2 (parent directory), we want all parts except last one
+                    base_path = parts[:-node.level] if node.level > 1 else parts
+                    module = '.'.join(base_path + ([module] if module else []))
+            else:
+                # For absolute imports
+                if module == top_level:
+                    # Case: from model_parallel import utils
+                    for alias in node.names:
+                        name = alias.name
+                        asname = alias.asname if alias.asname else name
+                        full_name = f"{module}.{name}"
+                        imports_mapping[asname] = full_name
+                    return imports_mapping
+                elif module.startswith(top_level + '.'):
+                    # Case: from model_parallel.utils import split_tensor
+                    pass  # Keep the module name as is
+                elif parent_module and not module.startswith(top_level):
+                    # Other imports - prepend top-level module if needed
+                    module = f"{top_level}.{module}"
+            
             for alias in node.names:
                 name = alias.name
                 asname = alias.asname if alias.asname else name
                 full_name = f"{module}.{name}" if module else name
                 imports_mapping[asname] = full_name
+        
         return imports_mapping
 
     def _parse_docstring(self, node: ast.AST) -> Optional[DocumentationElement]:
@@ -334,3 +371,65 @@ class PythonParser(BaseParser):
         elif isinstance(node, ast.Attribute):
             return f"{self._get_name(node.value)}.{node.attr}"
         return ast.unparse(node)
+
+class PythonFunctionCallVisitor(ast.NodeVisitor):
+    def __init__(self, imports_mapping):
+        self.imports_mapping = imports_mapping
+        self.calls = []
+        self.current_scope = []  # Track nested function/class scopes
+
+    def visit_Call(self, node):
+        function_name = self._get_function_name(node.func)
+        print(f"function_name: {function_name}")
+        if function_name:
+            # Handle fully qualified names (e.g., module.submodule.function)
+            parts = function_name.split('.')
+            module_name = self._resolve_module(parts[0])
+            
+            # If it's a method call on an imported object
+            if module_name and len(parts) > 1:
+                module_name = f"{module_name}.{'.'.join(parts[1:-1])}"
+            print(f"module_name: {module_name}")
+            self.calls.append(FunctionCallElement(
+                name=function_name,  # Just the function name
+                module_name=module_name,
+                line_number=node.lineno
+            ))
+        self.generic_visit(node)
+
+    def _get_function_name(self, node):
+        if isinstance(node, ast.Name):
+            return node.id
+        elif isinstance(node, ast.Attribute):
+            value = self._get_function_name(node.value)
+            if value:
+                return f"{value}.{node.attr}"
+            # Handle cases where value might be a complex expression
+            return node.attr
+        return None
+
+    def _resolve_module(self, first_part):
+        # Direct import mapping
+        if first_part in self.imports_mapping:
+            return self.imports_mapping[first_part]
+        
+        # Check for nested imports (from x import y as z)
+        for import_alias, full_path in self.imports_mapping.items():
+            if first_part == import_alias.split('.')[-1]:
+                return full_path
+                
+        # Could be built-in, local function, or class method
+        if first_part in __builtins__:
+            return 'builtins'
+        return None
+
+    # Track scope for better context
+    def visit_FunctionDef(self, node):
+        self.current_scope.append(node.name)
+        self.generic_visit(node)
+        self.current_scope.pop()
+
+    def visit_ClassDef(self, node):
+        self.current_scope.append(node.name)
+        self.generic_visit(node)
+        self.current_scope.pop()

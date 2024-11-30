@@ -134,6 +134,7 @@ class ClassElement:
     decorators: List[str] = field(default_factory=list)
     inner_classes: List['ClassElement'] = field(default_factory=list)  # Add inner classes support
     qualified_name: Optional[str] = None
+
 @dataclass
 class ModuleElement:
     """Represents a code module (file)."""
@@ -158,6 +159,14 @@ class ModuleElement:
     def is_package(self) -> bool:
         """Check if this module is a package (__init__.py)."""
         return self.name == '__init__'
+
+@dataclass
+class FunctionCallElement:
+    """Represents a function call."""
+    name: str
+    module_name: Optional[str]
+    line_number: int
+    resolved_name: Optional[str] = None
 
 @dataclass
 class FileNode:
