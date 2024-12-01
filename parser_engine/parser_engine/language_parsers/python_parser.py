@@ -36,16 +36,19 @@ class PythonParser(BaseParser):
         """Get supported Python file extensions."""
         return ['.py', '.pyw']
 
-    def parse_file(self, path: Path, package_name = "") -> ModuleElement:
+    def parse_file(self, path: Path, package_name = "", repo_root: Optional[Path] = None) -> ModuleElement:
         """
         Parse a Python source file.
         
         Args:
             path: Path to the Python file
+            package_name: Name of the package containing the file
+            repo_root: Root directory of the repository
             
         Returns:
             ModuleElement containing the parsed information
         """
+        self.repo_root = repo_root
         try:
             with open(path, 'r', encoding='utf-8') as f:
                 content = f.read()
@@ -232,12 +235,15 @@ class PythonParser(BaseParser):
             params.append(f"{arg.arg}: {param_type}")
         return_type = self._get_annotation_type(node.returns)
         
-        # Build qualified name based on context
-        qualified_name = [parent_name, f"{node.name}({', '.join(params)}) -> {return_type}"]
+        # Build simple name for symbol table lookup
+        simple_name = [parent_name, node.name]
+        
+        # Build full qualified name with signature
+        full_qualified_name = [parent_name, f"{node.name}({', '.join(params)}) -> {return_type}"]
         
         # Create function element
         function_element = FunctionElement(
-            name=".".join(qualified_name),  # <parent_name>.<parent_name>....<function_name>
+            name=".".join(simple_name),  # Simple name for symbol table lookup
             path=path,
             module=context.module,
             documentation=None,
@@ -247,7 +253,8 @@ class PythonParser(BaseParser):
             complexity=None,
             start_line=node.lineno,
             end_line=node.end_lineno,
-            is_async=isinstance(node, ast.AsyncFunctionDef)
+            is_async=isinstance(node, ast.AsyncFunctionDef),
+            qualified_name=".".join(full_qualified_name)  # Full name with signature
         )
         
         # Create new context for function contents
@@ -277,7 +284,7 @@ class PythonParser(BaseParser):
                 name = alias.name
                 asname = alias.asname if alias.asname else alias.name.split('.')[0]
                 if parent_module and not name.startswith('.'):
-                    if not name.startswith(top_level):
+                    if not name.startswith(top_level) and self._is_local_module(name):
                         name = f"{top_level}.{name}"
                 imports_mapping[asname] = name
         elif isinstance(node, ast.ImportFrom):
@@ -306,7 +313,8 @@ class PythonParser(BaseParser):
                     pass  # Keep the module name as is
                 elif parent_module and not module.startswith(top_level):
                     # Other imports - prepend top-level module if needed
-                    module = f"{top_level}.{module}"
+                    if self._is_local_module(module):
+                        module = f"{top_level}.{module}"
             
             for alias in node.names:
                 name = alias.name
@@ -315,6 +323,20 @@ class PythonParser(BaseParser):
                 imports_mapping[asname] = full_name
         
         return imports_mapping
+
+    def _is_local_module(self, module_name: str) -> bool:
+        """Check if a module is local to the repository."""
+        if not self.repo_root:
+            return False
+            
+        # Convert module name to potential file paths
+        possible_paths = [
+            self.repo_root / module_name.replace('.', '/'),  # as directory
+            self.repo_root / f"{module_name.replace('.', '/')}.py",  # as file
+            self.repo_root / f"{module_name.replace('.', '/')}/__init__.py"  # as package
+        ]
+        
+        return any(path.exists() for path in possible_paths)
 
     def _parse_docstring(self, node: ast.AST) -> Optional[DocumentationElement]:
         """Extract docstring from an AST node."""

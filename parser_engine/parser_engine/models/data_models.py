@@ -93,9 +93,9 @@ class FunctionCallElement:
 class FunctionElement:
     """Represents a function or method."""
     # The function's own name should be in format of 
-    # "function_name(Parameter1: Type, Parameter2: Type, ...) -> ReturnType"
+    # "<module_name>.<function_name>"
     # The full qualified name should be in format of
-    # <parent_name>:<parent_name>....<function_name>.lineno
+    # <parent_name>:<parent_name>....<function_name> (Parameter1: Type, Parameter2: Type, ...) -> ReturnType
     name: str
     path: Path  # Change to Path
     start_line: int
