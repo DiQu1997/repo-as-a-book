@@ -60,7 +60,8 @@ class TestPythonParser:
         func = parser._parse_function(Path('test.py'), func_node, ContextInfo(module=module), str(module.name))
         
         assert isinstance(func, FunctionElement)
-        assert func.name == 'test.test_func(param1: str, param2: int) -> bool'
+        assert func.name == 'test.test_func'
+        assert func.qualified_name == 'test.test_func(param1: str, param2: int) -> bool'
         assert func.is_async
         assert func.parameters == ['param1: str', 'param2: int']
         assert func.return_type == 'bool'
@@ -93,27 +94,11 @@ class TestPythonParser:
         assert cls.base_classes == ['BaseClass']
         assert cls.decorators == ['@decorator']
         assert len(cls.methods) == 1
-        assert cls.methods[0].name == 'test.TestClass.method(self: Any) -> Any'
+        assert cls.methods[0].name == 'test.TestClass.method'
+        assert cls.methods[0].qualified_name == 'test.TestClass.method(self: Any) -> Any'
         assert 'class_attr' in cls.attributes
         assert isinstance(cls.documentation, DocumentationElement)
         assert cls.documentation.content == "Test class"
-
-    def test_parse_imports(self, parser):
-        """Test import statement parsing"""
-        code = '''
-        import os
-        from pathlib import Path
-        from typing import List, Optional
-        '''
-        tree = ast.parse(dedent(code))
-        imports = []
-        for node in tree.body:
-            imports.extend(parser._parse_imports(node))
-            
-        assert 'os' in imports
-        assert 'from pathlib import Path' in imports
-        assert 'from typing import List' in imports
-        assert 'from typing import Optional' in imports
 
     def test_parse_file(self, parser, tmp_path):
         """Test complete file parsing"""
@@ -144,8 +129,12 @@ class TestPythonParser:
         assert isinstance(module.documentation, DocumentationElement)
         assert module.documentation.content == "Module docstring"
         assert module.classes[0].name == f'{module.name}.TestClass'
-        assert module.functions[0].name == f'{module.name}.test_func() -> Any'
-        assert module.classes[0].methods[0].name == f'{module.name}.TestClass.method(self: Any) -> Any'
+        assert module.functions[0].name == f'{module.name}.test_func'
+        assert module.functions[0].qualified_name == f'{module.name}.test_func() -> Any'
+        assert module.classes[0].methods[0].name == f'{module.name}.TestClass.method'
+        assert module.classes[0].methods[0].qualified_name == f'{module.name}.TestClass.method(self: Any) -> Any'
+        assert module.imports[0] == 'List'
+        assert module.imports_mapping['List'] == 'typing.List'
 
     def test_error_handling(self, parser, tmp_path):
         """Test error handling for invalid Python code"""
@@ -178,3 +167,151 @@ class TestPythonParser:
         func_node = tree.body[0]
         complexity = parser._calculate_complexity(func_node)
         assert complexity > 1  # Should count multiple branches
+
+    def test_parse_imports(self, parser):
+        """Test various import statement parsing scenarios"""
+        test_cases = [
+            # Simple import
+            (
+                "import math",
+                "",
+                {"math": "math"}
+            ),
+            # Import with alias
+            (
+                "import math as m",
+                "",
+                {"m": "math"}
+            ),
+            # Multiple imports
+            (
+                "import os, sys as system",
+                "",
+                {"os": "os", "system": "sys"}
+            ),
+            # From import
+            (
+                "from os import path",
+                "",
+                {"path": "os.path"}
+            ),
+            # From import with alias
+            (
+                "from os import path as p",
+                "",
+                {"p": "os.path"}
+            ),
+            # Multiple from imports
+            (
+                "from os import path, getcwd as get_dir",
+                "",
+                {"path": "os.path", "get_dir": "os.getcwd"}
+            ),
+            # Relative imports
+            (
+                "from . import sibling",
+                "pkg.parent",
+                {"sibling": "pkg.parent.sibling"}
+            ),
+            (
+                "from .. import uncle",
+                "pkg.parent.child",
+                {"uncle": "pkg.uncle"}
+            ),
+            (
+                "from .cousin import func",
+                "pkg.parent",
+                {"func": "pkg.parent.cousin.func"}
+            ),
+            # Nested imports
+            (
+                "import pkg.subpkg.module",
+                "",
+                {"pkg": "pkg.subpkg.module"}
+            ),
+            # Import all
+            (
+                "from os import *",
+                "",
+                {"*": "os.*"}
+            ),
+            # Empty from import
+            (
+                "from . import module",
+                "pkg.parent",
+                {"module": "pkg.parent.module"}
+            ),
+            
+            # Same function name from different modules with aliases
+            (
+                dedent('''
+                    from os.path import basename as os_basename
+                    from ntpath import basename as nt_basename
+                '''),
+                "",
+                {"os_basename": "os.path.basename", "nt_basename": "ntpath.basename"}
+            ),
+        ]
+
+        for import_str, parent_module, expected in test_cases:
+            # Parse all import statements in the string
+            nodes = ast.parse(import_str).body
+            result = {}
+            # Process each import statement and merge results
+            for node in nodes:
+                result.update(parser._parse_imports(node, parent_module))
+            assert result == expected, f"Failed for import: {import_str}"
+
+    def test_parse_imports_with_local_modules(self, parser, tmp_path):
+        """Test import parsing with local module resolution"""
+        # Setup mock repository structure
+        mock_project = tmp_path / "myproject"
+        mock_project.mkdir()
+        
+        # Create package structure
+        (mock_project / "__init__.py").touch()
+        (mock_project / "utils").mkdir()
+        (mock_project / "utils/__init__.py").touch()
+        (mock_project / "utils/helpers.py").touch()
+        (mock_project / "core").mkdir()
+        (mock_project / "core/__init__.py").touch()
+        
+        parser.repo_root = tmp_path
+
+        test_cases = [
+            # Local package imports
+            (
+                "from myproject.utils import helpers",
+                "myproject.core",
+                {"helpers": "myproject.utils.helpers"}
+            ),
+            # Relative imports within package
+            (
+                "from ..utils import helpers",
+                "myproject.core.submodule",
+                {"helpers": "myproject.utils.helpers"}
+            ),
+            # Import from sibling module
+            (
+                "from .utils import helpers",
+                "myproject",
+                {"helpers": "myproject.utils.helpers"}
+            ),
+            # Direct local package import
+            (
+                "import myproject.utils.helpers",
+                "",
+                {"myproject": "myproject.utils.helpers"}
+            ),
+            # Import with alias
+            (
+                "from myproject.utils.helpers import some_func as helper",
+                "myproject.core",
+                {"helper": "myproject.utils.helpers.some_func"}
+            ),
+        ]
+
+        for import_str, parent_module, expected in test_cases:
+            node = ast.parse(import_str).body[0]
+            result = parser._parse_imports(node, parent_module)
+            assert result == expected, f"Failed for import: {import_str}"
