@@ -83,7 +83,16 @@ class RepoIndexer:
         
 
     def _resolve_call(self, function_name: str, function: FunctionElement, module: ModuleElement) -> Optional[str]:
-        # 1. Check if the function is a built-in function
+        
+        if '.' in function_name:
+            module_part, func_part = function_name.split('.', 1)
+            # Check if the module part is in imports_mapping (handles case: from A import B, then B.F)
+            if module_part in module.imports_mapping:
+                base_module = module.imports_mapping[module_part]
+                return f"{base_module}.{func_part}"
+            return function_name  # Return as-is for direct module imports (import A, then A.B)
+
+        # 2. Check if the function is a built-in function
         if self._is_builtin_function(function_name):
             return function_name  # Indicate that it's a built-in function
         
