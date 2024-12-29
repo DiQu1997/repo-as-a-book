@@ -1,7 +1,7 @@
 from typing import List, Dict, Union, Tuple
-from parser_engine.models.data_models import ModuleElement, FunctionElement, ClassElement, FunctionCallElement
+from ..models.data_models import ModuleElement, FunctionElement, ClassElement, FunctionCallElement
 from typing import Optional
-from parser_engine.language_parsers.python_parser import PythonFunctionCallVisitor
+from ..language_parsers.python_parser import PythonFunctionCallVisitor
 import ast
 
 class RepoIndexer:
@@ -49,12 +49,9 @@ class RepoIndexer:
     
     def _resolve_function_calls_in_function(self, function: FunctionElement, module: ModuleElement):
         # Extract function calls
-        print(f"extracting function calls in {function.qualified_name}")
         function.function_calls = self._extract_function_calls(function, module)
-        print(f"    extracted function calls internally: {function.function_calls}")
         for call in function.function_calls:
             resolved_name = self._resolve_call(call.name, function, module)
-            print(f"        call: {call.name}, resolved call: {resolved_name}")
             call.resolved_name = resolved_name  # Add this field to FunctionCallElement
     
     def _extract_function_calls(self, function: FunctionElement, module: ModuleElement) -> List[FunctionCallElement]:
@@ -102,7 +99,6 @@ class RepoIndexer:
             return local_name
         
         # 3. Check imports mapping
-        print(f"module.imports_mapping: {module.imports_mapping}")
         if function_name in module.imports_mapping:
             imported_module_name = module.imports_mapping[function_name]
             imported_name = f"{imported_module_name}.{function_name}"

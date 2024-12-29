@@ -402,7 +402,6 @@ class PythonFunctionCallVisitor(ast.NodeVisitor):
 
     def visit_Call(self, node):
         function_name = self._get_function_name(node.func)
-        print(f"function_name: {function_name}")
         if function_name:
             # Handle fully qualified names (e.g., module.submodule.function)
             parts = function_name.split('.')
@@ -411,7 +410,6 @@ class PythonFunctionCallVisitor(ast.NodeVisitor):
             # If it's a method call on an imported object
             if module_name and len(parts) > 1:
                 module_name = f"{module_name}.{'.'.join(parts[1:-1])}"
-            print(f"module_name: {module_name}")
             self.calls.append(FunctionCallElement(
                 name=function_name,  # Just the function name
                 module_name=module_name,

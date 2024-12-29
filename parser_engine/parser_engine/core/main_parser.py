@@ -1,238 +1,138 @@
 from pathlib import Path
-import logging
-from typing import Dict, List, Optional, Set
-from datetime import datetime
+from typing import List, Dict, Optional
+from collections import defaultdict
+from ..language_parsers.python_parser import PythonParser
+from ..models.data_models import FunctionElement, ModuleElement, FunctionCallElement
+from .repo_analyzer import RepoIndexer
 
-from ..models.data_models import (
-    RepositoryData, DirectoryTree, DirectoryNode, FileNode,
-    ModuleElement, DocumentationElement, CommitData, ContributorData
-)
 
-"""
-Main orchestrator for the repository parsing process.
-Coordinates different parsing components and assembles the final repository data.
+class MainParser:
+    def __init__(self, repo_path: Path):
+        self.repo_path = repo_path
+        self.parser = PythonParser()
+        self.modules = []
+        self.indexer = None
+        self.call_graph = {}
 
-Workflow:
-1. Build directory tree
-2. Detect languages
-3. Parse code files
-4. Parse documentation files
-5. Extract Git metadata
-6. Assemble repository data
-"""
-
-class MainParserEngine:
-    """
-    Main orchestrator for the repository parsing process.
-    Coordinates different parsing components and assembles the final repository data.
-    """
-
-    def __init__(self, repository_path: str, logger: Optional[logging.Logger] = None):
+    def parse_repo(self):
         """
-        Initialize the parser engine.
-
-        Args:
-            repository_path: Path to the Git repository
-            logger: Optional logger instance
+        Parse all Python files in the repository and store the resulting modules.
         """
-        self.repo_path = Path(repository_path)
+        self.modules = []
         if not self.repo_path.exists():
-            raise ValueError(f"Repository path does not exist: {repository_path}")
-        if not self.repo_path.is_dir():
-            raise ValueError(f"Repository path is not a directory: {repository_path}")
+            raise FileNotFoundError(f"The repository path {self.repo_path} does not exist.")
+        for file_path in self.repo_path.rglob("*.py"):
+            if self.parser.can_parse(file_path):
+                try:
+                    module = self.parser.parse_file(file_path, repo_root=self.repo_path)
+                    self.modules.append(module)
+                except Exception as e:
+                    print(f"Error parsing {file_path}: {e}")
 
-        self.logger = logger or logging.getLogger(__name__)
-        
-        # Will be initialized as needed
-        self._language_detector = None
-        self._file_classifier = None
-        self._metadata_extractor = None
-        self._documentation_parser = None
-        
-    def parse_repository(self) -> RepositoryData:
+        # Create and run the indexer
+        self.indexer = RepoIndexer(self.modules)
+        self.indexer.index_repository()
+
+    def build_call_graph(self):
         """
-        Parse the entire repository and generate comprehensive data.
-
-        Returns:
-            RepositoryData object containing all parsed information
+        Build the function call graph for the parsed repository.
         """
-        try:
-            self.logger.info(f"Starting repository parsing: {self.repo_path}")
-            
-            # Step 1: Build directory tree and detect languages
-            directory_tree = self._build_directory_tree()
-            languages = self._detect_languages(directory_tree)
-            
-            # Step 2: Parse code files
-            modules = self._parse_code_files(directory_tree)
-            
-            # Step 3: Parse documentation
-            documentation = self._parse_documentation_files(directory_tree)
-            
-            # Step 4: Extract Git metadata
-            contributors, commits = self._extract_metadata()
-            
-            # Step 5: Assemble repository data
-            repo_data = RepositoryData(
-                name=self.repo_path.name,
-                url=self._get_repository_url(),
-                primary_language=self._determine_primary_language(languages),
-                directory_tree=directory_tree,
-                languages=languages,
-                modules=modules,
-                documentation_files=documentation,
-                contributors=contributors,
-                commit_history=commits,
-                creation_date=self._get_creation_date(commits),
-                last_update_date=self._get_last_update_date(commits)
-            )
-            
-            self.logger.info("Repository parsing completed successfully")
-            return repo_data
-            
-        except Exception as e:
-            self.logger.error(f"Error parsing repository: {str(e)}")
-            raise
+        if not self.indexer:
+            raise RuntimeError("Repository must be parsed before building the call graph.")
 
-    def _build_directory_tree(self) -> DirectoryTree:
-        """Build the directory tree structure."""
-        def _build_node(path: Path) -> DirectoryNode:
-            node = DirectoryNode(
-                name=path.name,
-                path=path,
-                files=[],
-                subdirectories=[]
-            )
-            
-            try:
-                # Process all entries in the directory
-                for entry in path.iterdir():
-                    if entry.name.startswith('.'):  # Skip hidden files/dirs
-                        continue
-                        
-                    if entry.is_file():
-                        file_node = FileNode(
-                            name=entry.name,
-                            path=entry,
-                            size_bytes=entry.stat().st_size,
-                            last_modified=datetime.fromtimestamp(entry.stat().st_mtime),
-                            extension=entry.suffix.lower(),
-                            content_type=self._determine_content_type(entry),
-                            language=None  # Will be set later
-                        )
-                        node.add_file(file_node)
-                    
-                    elif entry.is_dir():
-                        subnode = _build_node(entry)
-                        node.add_directory(subnode)
-                
-            except PermissionError as e:
-                self.logger.warning(f"Permission denied accessing {path}: {e}")
-            except Exception as e:
-                self.logger.error(f"Error processing {path}: {e}")
-            
-            return node
+        call_graph = defaultdict(list)
+        symbol_table = self.indexer.symbol_table
 
-        root_node = _build_node(self.repo_path)
-        tree = DirectoryTree(root=root_node)
-        tree.calculate_stats()
-        return tree
+        for module in self.modules:
+            # Process functions
+            for func in module.functions:
+                caller = func.qualified_name
+                if caller and caller in symbol_table:
+                    for call in func.function_calls:
+                        if call.resolved_name and call.resolved_name in symbol_table:
+                            call_graph[caller].append(call.resolved_name)
 
-    def _detect_languages(self, directory_tree: DirectoryTree) -> Dict[str, int]:
-        """Detect programming languages used in the repository."""
-        if not self._language_detector:
-            from .language_detection import LanguageDetector
-            self._language_detector = LanguageDetector()
-        
-        return self._language_detector.detect_languages(directory_tree)
+            # Process class methods
+            for cls in module.classes:
+                for method in cls.methods:
+                    caller = method.qualified_name
+                    if caller and caller in symbol_table:
+                        for call in method.function_calls:
+                            if call.resolved_name and call.resolved_name in symbol_table:
+                                call_graph[caller].append(call.resolved_name)
 
-    def _parse_code_files(self, directory_tree: DirectoryTree) -> List[ModuleElement]:
-        """Parse all code files in the repository."""
-        modules = []
-        for file_node in self._get_code_files(directory_tree):
-            try:
-                parser = self._get_parser_for_language(file_node.language)
-                if parser:
-                    module = parser.parse_file(file_node.path)
-                    modules.append(module)
-            except Exception as e:
-                self.logger.error(f"Error parsing {file_node.path}: {e}")
-        return modules
+        self.call_graph = dict(call_graph)
 
-    def _parse_documentation_files(self, directory_tree: DirectoryTree) -> List[DocumentationElement]:
-        """Parse documentation files."""
-        if not self._documentation_parser:
-            from .documentation_parser import DocumentationParser
-            self._documentation_parser = DocumentationParser()
-        
-        docs = []
-        for file_node in self._get_documentation_files(directory_tree):
-            try:
-                doc = self._documentation_parser.parse_file(file_node.path)
-                docs.append(doc)
-            except Exception as e:
-                self.logger.error(f"Error parsing documentation {file_node.path}: {e}")
-        return docs
+    def get_function_source_code(self, function_name: str) -> str:
+        """
+        Retrieve the source code of a specific function by its name.
+        """
+        if not self.indexer:
+            raise RuntimeError("Repository must be parsed before retrieving function source code.")
 
-    def _extract_metadata(self) -> tuple[List[ContributorData], List[CommitData]]:
-        """Extract Git metadata including commits and contributors."""
-        if not self._metadata_extractor:
-            from .metadata_extractor import MetadataExtractor
-            self._metadata_extractor = MetadataExtractor(self.repo_path)
-        
-        return self._metadata_extractor.extract_metadata()
+        func_elem = self.indexer.symbol_table.get(function_name)
+        if not func_elem:
+            raise ValueError(f"Function {function_name} not found in symbol table.")
 
-    def _determine_content_type(self, path: Path) -> str:
-        """Determine the content type of a file."""
-        if not self._file_classifier:
-            from .file_classifier import FileClassifier
-            self._file_classifier = FileClassifier()
-        
-        return self._file_classifier.classify_file(path)
+        module = func_elem.module
+        source_lines = module.body.splitlines()[func_elem.start_line - 1:func_elem.end_line]
+        return "\n".join(source_lines)
 
-    def _get_repository_url(self) -> str:
-        """Get the repository's remote URL."""
-        try:
-            import git
-            repo = git.Repo(self.repo_path)
-            return next(repo.remote().urls, '')
-        except Exception as e:
-            self.logger.warning(f"Could not determine repository URL: {e}")
-            return ''
+    def group_calls_by_line(self, function: FunctionElement) -> Dict[int, List[FunctionCallElement]]:
+        """
+        Group function calls by line number within a function.
+        """
+        calls_by_line = defaultdict(list)
+        for call in function.function_calls:
+            if call.resolved_name in self.indexer.symbol_table:
+                calls_by_line[call.line_number - 1].append(call)
+        return dict(calls_by_line)
 
-    def _determine_primary_language(self, languages: Dict[str, int]) -> str:
-        """Determine the primary programming language used in the repository."""
-        if not languages:
-            return 'unknown'
-        return max(languages.items(), key=lambda x: x[1])[0]
+    def display_function_source_and_calls(
+        self,
+        func_fqn: str,
+        visited_stack: Optional[List[str]] = None,
+        indent: int = 0
+    ):
+        """
+        Display the source code of a function and its calls, expanding inlined calls recursively.
+        """
+        if not self.indexer:
+            raise RuntimeError("Repository must be parsed before displaying function source and calls.")
 
-    def _get_creation_date(self, commits: List[CommitData]) -> Optional[datetime]:
-        """Get repository creation date from first commit."""
-        if not commits:
-            return None
-        return min(commit.date for commit in commits)
+        if visited_stack is None:
+            visited_stack = []
 
-    def _get_last_update_date(self, commits: List[CommitData]) -> Optional[datetime]:
-        """Get repository last update date from latest commit."""
-        if not commits:
-            return None
-        return max(commit.date for commit in commits)
+        if func_fqn in visited_stack:
+            print(" " * indent + f"(cycle) {func_fqn} ... {' -> '.join(visited_stack)} -> {func_fqn}")
+            return
 
-    def _get_code_files(self, directory_tree: DirectoryTree) -> List[FileNode]:
-        """Get all code files from the directory tree."""
-        return [
-            file for file in directory_tree.root.get_all_files()
-            if file.is_code
-        ]
+        visited_stack.append(func_fqn)
+        func_elem = self.indexer.symbol_table.get(func_fqn)
 
-    def _get_documentation_files(self, directory_tree: DirectoryTree) -> List[FileNode]:
-        """Get all documentation files from the directory tree."""
-        return [
-            file for file in directory_tree.root.get_all_files()
-            if file.is_documentation
-        ]
+        if not func_elem:
+            print(" " * indent + f"* {func_fqn} (unresolved or built-in)")
+            visited_stack.pop()
+            return
 
-    def _get_parser_for_language(self, language: str):
-        """Get the appropriate parser for a given language."""
-        from .parser_factory import ParserFactory
-        return ParserFactory.get_parser(language)
+        print(" " * indent + f"{func_elem.name}()")
+        function_source_code = self.get_function_source_code(func_fqn)
+        if function_source_code:
+            source_lines = function_source_code.splitlines()
+            calls_by_line = self.group_calls_by_line(func_elem)
+
+            for idx, line in enumerate(source_lines):
+                print(" " * (indent + 2) + line)
+                if idx in calls_by_line:
+                    for call in calls_by_line[idx]:
+                        callee_fqn = call.resolved_name
+                        if callee_fqn:
+                            previous_line_length = len(source_lines[idx-1]) + indent + 4 if idx > 0 else 0
+                            print(" " * previous_line_length + f"-> calls {callee_fqn}")
+                            self.display_function_source_and_calls(callee_fqn, visited_stack, previous_line_length + 3)
+                        else:
+                            print(" " * (indent + 4) + f"-> calls {call.name} (unresolved)")
+        else:
+            print(" " * (indent + 2) + "<No source available>")
+
+        visited_stack.pop()

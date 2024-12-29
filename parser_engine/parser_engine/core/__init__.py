@@ -1,3 +1,3 @@
-from .main_parser import MainParserEngine
+from .main_parser import MainParser
 
-__all__ = ['MainParserEngine']
+__all__ = ['MainParser']
